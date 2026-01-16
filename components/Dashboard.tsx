@@ -20,51 +20,29 @@ const Dashboard: React.FC<DashboardProps> = ({ agents, currentTicket, settings, 
   const [pendingTickets, setPendingTickets] = useState<Ticket[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const loadTickets = async () => {
+    if (settings.apiToken && settings.email && settings.queueId) {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const tickets = await ZendeskService.fetchTicketsFromView(settings);
+        setPendingTickets(tickets || []);
+      } catch (e) {
+        setError("Erro de CORS: O navegador bloqueou a conexão. Este app deve ser usado como App Privado no Zendesk para visualização real.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
     setIsMounted(true);
-    const loadTickets = async () => {
-      if (settings.apiToken && settings.email && settings.queueId) {
-        setIsLoading(true);
-        setError(null);
-        try {
-          const tickets = await ZendeskService.fetchTicketsFromView(settings);
-          if (tickets && tickets.length > 0) {
-            setPendingTickets(tickets);
-          } else {
-            // Se retornar vazio, pode ser a View ou erro de CORS
-            // Criamos um ticket fake apenas para o usuário conseguir ver o Dashboard funcionando no Render
-            setPendingTickets([
-              { id: '1001', subject: 'Aguardando Sincronização Real...', description: 'Conecte o app no Zendesk para ver dados vivos.', priority: TicketPriority.NORMAL, tags: ['demo'], status: 'open' }
-            ]);
-          }
-        } catch (e) {
-          setError("Erro de conexão com Zendesk (CORS).");
-        } finally {
-          setIsLoading(false);
-        }
-      }
-    };
     loadTickets();
+    const interval = setInterval(loadTickets, 30000); // Atualiza tickets a cada 30s
+    return () => clearInterval(interval);
   }, [settings]);
 
   const threshold = settings.overloadThreshold || 80;
-
-  const getLevelLabel = (level: KnowledgeLevel) => {
-    switch(level) {
-      case KnowledgeLevel.ADVANCED: return 'Expert';
-      case KnowledgeLevel.INTERMEDIATE: return 'Proficiente';
-      default: return 'Aprendiz';
-    }
-  };
-
-  const getLevelColor = (level: KnowledgeLevel) => {
-    switch(level) {
-      case KnowledgeLevel.ADVANCED: return 'text-amber-600 bg-amber-50 border-amber-200';
-      case KnowledgeLevel.INTERMEDIATE: return 'text-blue-600 bg-blue-50 border-blue-200';
-      default: return 'text-slate-500 bg-slate-50 border-slate-200';
-    }
-  };
-
   const activeTicket = currentTicket || pendingTickets[0] || null;
 
   const smartRecommendationData = useMemo(() => {
@@ -72,47 +50,40 @@ const Dashboard: React.FC<DashboardProps> = ({ agents, currentTicket, settings, 
     const available = agents.filter(a => a.isActive);
     if (!available.length) return null;
 
-    const ticketSystem = settings.systemFieldId && activeTicket.customFields 
-      ? String(activeTicket.customFields[settings.systemFieldId]).toLowerCase()
-      : null;
-
-    const ticketContent = (activeTicket.subject + ' ' + activeTicket.description).toLowerCase();
-
-    const scoredAgents = available.map(agent => {
+    return available.map(agent => {
       let score = 0;
-      let analysisInsights: Array<{source: string, match: string, level: number, points: number}> = [];
       const occupancyRate = agent.currentWorkload / agent.maxCapacity;
-      score += (1 - occupancyRate) * 30;
-
+      score += (1 - occupancyRate) * 40;
+      
+      const ticketContent = (activeTicket.subject + ' ' + activeTicket.description).toLowerCase();
       const agentExpertise = agent.expertise || [];
-      if (ticketSystem) {
-        const formMatch = agentExpertise.find(exp => exp.systemName.toLowerCase() === ticketSystem);
-        if (formMatch) {
-          analysisInsights.push({ source: 'Formulário', match: formMatch.systemName, level: formMatch.level, points: Math.round(formMatch.level * 13.3) });
-          score += formMatch.level * 13.3;
+      
+      agentExpertise.forEach(exp => {
+        if (ticketContent.includes(exp.systemName.toLowerCase())) {
+          score += (exp.level * 20);
         }
-      }
-      return { agent, score, analysisInsights, occupancyRate };
-    });
+      });
 
-    return scoredAgents.sort((a, b) => b.score - a.score)[0];
-  }, [activeTicket, agents, settings]);
+      return { agent, score, occupancyRate };
+    }).sort((a, b) => b.score - a.score)[0];
+  }, [activeTicket, agents]);
 
   const handleSmartAssign = async () => {
     if (!activeTicket || !smartRecommendationData) return;
     setIsAssigning(true);
+    // Simulação de delay de processamento da IA
     setTimeout(() => {
       const target = smartRecommendationData.agent;
       const newAgents = agents.map(a => a.id === target.id ? { ...a, currentWorkload: a.currentWorkload + 1 } : a);
       onUpdateAgents(newAgents);
       const log: AssignmentLog = {
         id: Date.now().toString(), ticketId: activeTicket.id, agentName: target.name, timestamp: Date.now(),
-        reason: "IA Smart Match", type: 'manual', score: Math.round(smartRecommendationData.score)
+        reason: "IA Real-Time Match", type: 'manual', score: Math.round(smartRecommendationData.score)
       };
       onAssignSuccess(activeTicket.tags[0] || 'geral', target.id, log);
       setPendingTickets(prev => prev.filter(t => t.id !== activeTicket.id));
       setIsAssigning(false);
-    }, 800);
+    }, 600);
   };
 
   const chartData = agents.map(a => ({
@@ -124,85 +95,108 @@ const Dashboard: React.FC<DashboardProps> = ({ agents, currentTicket, settings, 
   return (
     <div className="space-y-6 animate-fadeIn pb-10">
       {error && (
-        <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex items-center gap-3 text-amber-700 text-xs font-bold">
-          <i className="bi bi-exclamation-triangle-fill"></i>
-          Aviso: O navegador pode estar bloqueando a conexão direta com o Zendesk (CORS). No ambiente Render, use dados locais para teste.
+        <div className="bg-red-50 border-2 border-red-200 p-4 rounded-2xl flex items-start gap-3 text-red-700 shadow-sm">
+          <i className="bi bi-shield-slash-fill text-xl"></i>
+          <div>
+            <p className="font-bold text-sm">Bloqueio de Segurança Detectado</p>
+            <p className="text-xs opacity-80">Para visualizar sua fila real <b>{settings.queueId}</b>, instale este app no painel do Zendesk ou use uma extensão de "CORS Unblock" no Chrome para testes.</p>
+          </div>
+        </div>
+      )}
+
+      {isLoading && pendingTickets.length === 0 && (
+        <div className="py-20 text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-magalu border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-slate-400 font-bold animate-pulse uppercase text-xs tracking-widest">Conectando à Fila Viva...</p>
         </div>
       )}
       
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <i className="bi bi-cpu-fill text-magalu text-xl"></i>
-            <h3 className="font-bold text-slate-800 text-sm uppercase tracking-tight">Fila Real do Zendesk</h3>
-          </div>
-          <span className="text-[10px] font-bold text-slate-400 bg-white px-2 py-1 rounded border">View ID: {settings.queueId}</span>
+      {!isLoading && pendingTickets.length === 0 && !error && (
+        <div className="bg-white p-12 rounded-3xl border-2 border-dashed border-slate-200 text-center">
+          <i className="bi bi-inbox text-5xl text-slate-200 mb-4 block"></i>
+          <p className="text-slate-400 font-bold">Fila limpa! Nenhum ticket pendente em {settings.queueId}.</p>
         </div>
-        <div className="max-h-40 overflow-y-auto custom-scrollbar">
-          <table className="w-full text-left text-xs">
-            <tbody className="divide-y divide-slate-100">
-              {pendingTickets.map(ticket => (
-                <tr key={ticket.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-6 py-3 font-bold text-slate-500 w-24">#{ticket.id}</td>
-                  <td className="px-4 py-3">
-                    <div className="font-bold text-slate-700">{ticket.subject}</div>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex gap-1 justify-end">
-                      {ticket.tags.slice(0, 2).map(tag => (
-                        <span key={tag} className="bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[8px] font-bold">#{tag}</span>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border-2 border-slate-100 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <span className="text-lg font-bold text-slate-800">Match Inteligente</span>
-              {smartRecommendationData && <span className="text-2xl font-black text-magalu">{Math.round(smartRecommendationData.score)}%</span>}
-            </div>
-            {smartRecommendationData ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border">
-                  <div className="w-8 h-8 rounded-full bg-magalu text-white flex items-center justify-center font-bold text-xs">{smartRecommendationData.agent.name.charAt(0)}</div>
-                  <div className="text-sm font-bold text-slate-700">{smartRecommendationData.agent.name}</div>
-                </div>
+      {pendingTickets.length > 0 && (
+        <>
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <i className="bi bi-lightning-charge-fill text-magalu"></i>
+                <h3 className="font-bold text-slate-800 text-xs uppercase">Tickets em Tempo Real ({pendingTickets.length})</h3>
               </div>
-            ) : <div className="py-10 text-center text-slate-300">Sem recomendações.</div>}
+              <button onClick={loadTickets} className="text-[10px] font-bold text-magalu bg-white px-3 py-1 rounded-full border border-magalu/20 hover:bg-magalu hover:text-white transition-all">
+                ATUALIZAR AGORA
+              </button>
+            </div>
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+              <table className="w-full text-left text-xs">
+                <tbody className="divide-y divide-slate-100">
+                  {pendingTickets.map(ticket => (
+                    <tr key={ticket.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-6 py-4 font-bold text-slate-400">#{ticket.id}</td>
+                      <td className="px-4 py-4">
+                        <div className="font-bold text-slate-700">{ticket.subject}</div>
+                      </td>
+                      <td className="px-4 py-4 text-right">
+                        <span className={`px-2 py-1 rounded text-[9px] font-black uppercase ${
+                          ticket.priority === 'urgent' ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {ticket.priority}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <button onClick={handleSmartAssign} disabled={isAssigning || !smartRecommendationData} className="w-full mt-8 py-3 rounded-xl font-bold text-white bg-magalu disabled:opacity-50">
-            {isAssigning ? 'Atribuindo...' : 'Confirmar Atribuição'}
-          </button>
-        </div>
 
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 min-h-[300px]">
-          <h2 className="text-lg font-bold text-slate-800 mb-6">Carga Operacional</h2>
-          <div className="h-64">
-            {isMounted && (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" fontSize={10} fontWeight={700} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip />
-                  <Bar dataKey="carga" radius={[4, 4, 0, 0]} barSize={30}>
-                     {chartData.map((entry, index) => (
-                       <Cell key={`cell-${index}`} fill={entry.percentual >= threshold ? '#ef4444' : '#f60040'} />
-                     ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border-2 border-slate-100">
+              <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">IA Recommend</h2>
+              {smartRecommendationData ? (
+                <div className="space-y-6">
+                   <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 bg-magalu/10 rounded-2xl flex items-center justify-center text-magalu text-2xl font-black">
+                        {Math.round(smartRecommendationData.score)}%
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold text-slate-800">{smartRecommendationData.agent.name}</div>
+                        <div className="text-[10px] text-slate-400">Match baseado em expertise e carga</div>
+                      </div>
+                   </div>
+                   <button onClick={handleSmartAssign} disabled={isAssigning} className="w-full py-4 bg-magalu text-white rounded-xl font-bold shadow-lg shadow-magalu/20 active:scale-95 transition-all">
+                     {isAssigning ? 'PROCESSANDO...' : 'CONFIRMAR ATRIBUIÇÃO'}
+                   </button>
+                </div>
+              ) : <div className="py-10 text-center text-slate-300">Aguardando ticket...</div>}
+            </div>
+
+            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <h2 className="text-sm font-bold text-slate-400 uppercase mb-6 tracking-widest">Carga Operacional Viva</h2>
+              <div className="h-48">
+                {isMounted && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis dataKey="name" fontSize={9} fontWeight={700} axisLine={false} tickLine={false} />
+                      <YAxis hide />
+                      <Tooltip />
+                      <Bar dataKey="carga" radius={[6, 6, 0, 0]} barSize={24}>
+                         {chartData.map((entry, index) => (
+                           <Cell key={`cell-${index}`} fill={entry.percentual >= threshold ? '#ef4444' : '#f60040'} />
+                         ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 };

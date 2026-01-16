@@ -16,7 +16,7 @@ const App: React.FC = () => {
   const [memory, setMemory] = useState<AssignmentMemory[]>([]);
   const [logs, setLogs] = useState<AssignmentLog[]>([]);
   
-  // Credenciais fixas conforme solicitado - Agora com subdomínio opsmagalu
+  // Credenciais fixas e Subdomínio conforme solicitado
   const [settings, setSettings] = useState<AppSettings>({
     subdomain: 'opsmagalu',
     apiToken: 'MgqbK3ah4XBOcAJOiMXgFU9O2gYJqA2HHeSHhhL5',
@@ -31,32 +31,15 @@ const App: React.FC = () => {
     allowedGroupIds: []
   });
   
-  const [currentTicket] = useState<Ticket | null>({
-    id: '459203',
-    subject: 'Falha crítica no sistema de Checkout MagaluPay',
-    description: 'O cliente relata que ao tentar finalizar a compra utilizando o saldo MagaluPay, o sistema retorna erro 500.',
-    priority: TicketPriority.URGENT,
-    tags: ['checkout', 'financeiro', 'api_error'],
-    status: 'open',
-    customFields: {
-      'system_field': 'MagaluPay'
-    }
-  });
+  const [currentTicket, setCurrentTicket] = useState<Ticket | null>(null);
 
   const loadData = useCallback(async () => {
-    // 1. Carrega dados salvos localmente (persistência de expertises)
     const savedAgents = await StorageService.loadAgents();
-    const savedSettings = await StorageService.loadSettings();
     const savedMemory = localStorage.getItem('magalu_ai_memory');
     const savedLogs = localStorage.getItem('magalu_ai_logs');
     
-    // Mantém as credenciais fixas mas permite carregar outras configs se existirem
-    if (savedSettings) {
-      setSettings(prev => ({ ...prev, ...savedSettings, subdomain: 'opsmagalu', email: 'alan.rosa@luizalabs.com' }));
-    }
-
-    // 2. Tenta sincronizar com o Zendesk real
     try {
+      // Chamada REAL para o Zendesk
       const realAgents = await ZendeskService.fetchAgents(settings);
       
       if (realAgents && realAgents.length > 0) {
@@ -67,20 +50,11 @@ const App: React.FC = () => {
         setAgents(mergedAgents);
         StorageService.saveAgents(mergedAgents);
       } else {
-        // Fallback: Se a API falhar (ex: CORS), usa dados locais ou mocks para não ficar vazio
-        if (savedAgents.length > 0) {
-          setAgents(savedAgents);
-        } else {
-          // Mock de segurança para visualização inicial caso a API seja bloqueada
-          const mockAgents: Agent[] = [
-            { id: 1, name: "Alan Rosa (Mock)", email: "alan.rosa@luizalabs.com", maxCapacity: 8, currentWorkload: 2, skills: [], expertise: [], isActive: true },
-            { id: 2, name: "Suporte Magalu 01", email: "suporte1@magalu.com", maxCapacity: 8, currentWorkload: 5, skills: [], expertise: [], isActive: true }
-          ];
-          setAgents(mockAgents);
-        }
+        // Se a API falhar (CORS), mantém os agentes salvos localmente
+        if (savedAgents.length > 0) setAgents(savedAgents);
       }
     } catch (error) {
-      console.warn("API Zendesk inacessível (CORS ou Rede). Usando dados locais.");
+      console.error("Erro na conexão real com Zendesk:", error);
       if (savedAgents.length > 0) setAgents(savedAgents);
     }
 
@@ -90,17 +64,14 @@ const App: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, []);
+    // Pooling de agentes a cada 2 minutos para carga real
+    const interval = setInterval(loadData, 120000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   const handleUpdateAgents = (newAgents: Agent[]) => {
     setAgents(newAgents);
     StorageService.saveAgents(newAgents);
-  };
-
-  const handleUpdateSettings = (newSettings: AppSettings) => {
-    const fixedSettings = { ...newSettings, subdomain: 'opsmagalu', email: 'alan.rosa@luizalabs.com' };
-    setSettings(fixedSettings);
-    StorageService.saveSettings(fixedSettings);
   };
 
   const saveToMemory = (tag: string, agentId: number, log: AssignmentLog) => {
@@ -150,7 +121,7 @@ const App: React.FC = () => {
           {activeTab === 'settings' && (
             <Settings 
               settings={settings} 
-              onSave={handleUpdateSettings}
+              onSave={setSettings}
               onSyncAgents={handleUpdateAgents}
             />
           )}
@@ -167,7 +138,7 @@ const App: React.FC = () => {
                     </div>
                   </div>
                   {logs.length === 0 ? (
-                    <div className="py-20 text-center text-slate-300 italic">Nenhum registro.</div>
+                    <div className="py-20 text-center text-slate-300 italic">Nenhum registro real.</div>
                   ) : (
                     <div className="space-y-4">
                       {logs.map(log => (
@@ -177,7 +148,7 @@ const App: React.FC = () => {
                             <div className="text-sm font-bold text-slate-700">Para {log.agentName}</div>
                           </div>
                           <div className="text-right">
-                             <div className={`text-[10px] font-bold px-2 py-1 rounded uppercase ${log.type === 'autopilot' ? 'bg-magalu text-white' : 'bg-slate-200 text-slate-500'}`}>
+                             <div className={`text-[10px] font-bold px-2 py-1 rounded uppercase bg-magalu text-white`}>
                                 {log.type}
                              </div>
                           </div>
