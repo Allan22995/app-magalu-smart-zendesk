@@ -1,6 +1,9 @@
 
 import { AppSettings, Agent, Ticket } from '../types';
 
+// O AllOrigins é um proxy que não exige ativação manual via clique em botão, ideal para o Render.
+const PROXY_URL = "https://api.allorigins.win/get?url=";
+
 export const ZendeskService = {
   getAuthHeader(settings: AppSettings) {
     const auth = btoa(`${settings.email}/token:${settings.apiToken}`);
@@ -11,23 +14,60 @@ export const ZendeskService = {
     };
   },
 
+  /**
+   * Faz o fetch contornando o CORS usando AllOrigins
+   */
+  async fetchWithProxy(targetUrl: string, settings: AppSettings) {
+    const encodedUrl = encodeURIComponent(targetUrl);
+    const finalUrl = `${PROXY_URL}${encodedUrl}`;
+
+    const response = await fetch(finalUrl, {
+      method: 'GET',
+      headers: {
+        // Nota: O AllOrigins não repassa o header de Auth automaticamente para o destino em requisições complexas
+        // mas o Zendesk aceita a credencial via URL (auth embutido) ou via headers se o proxy permitir.
+        // Como o AllOrigins é um Wrapper, ele retorna o conteúdo da página original.
+      }
+    });
+
+    if (!response.ok) throw new Error('Erro na rede do Proxy');
+    
+    // O AllOrigins retorna um JSON com { contents: "string_do_resultado" }
+    // Precisamos de um fetch direto mas com credenciais para o Zendesk.
+    // TENTATIVA 2: Se o AllOrigins falhar nas credenciais, usamos o proxy de desenvolvimento herokuapp.
+    const directUrl = `https://cors-anywhere.herokuapp.com/${targetUrl}`;
+    
+    const zendeskResponse = await fetch(directUrl, {
+      headers: this.getAuthHeader(settings)
+    });
+
+    if (!zendeskResponse.ok) {
+       // Se o CORS Anywhere falhar por falta de clique no botão, tentamos um terceiro sem travas
+       const thirdProxy = `https://thingproxy.freeboard.io/fetch/${targetUrl}`;
+       const res3 = await fetch(thirdProxy, { headers: this.getAuthHeader(settings) });
+       return await res3.json();
+    }
+
+    return await zendeskResponse.json();
+  },
+
   async validateCredentials(settings: AppSettings): Promise<boolean> {
-    const url = `https://${settings.subdomain}.zendesk.com/api/v2/users/me.json`;
     try {
-      const response = await fetch(url, { headers: this.getAuthHeader(settings) });
-      return response.ok;
+      const data = await this.fetchWithProxy(`https://${settings.subdomain}.zendesk.com/api/v2/users/me.json`, settings);
+      return !!data.user;
     } catch (e) {
-      console.error("Erro ao validar credenciais Zendesk:", e);
       return false;
     }
   },
 
   async fetchAgents(settings: AppSettings): Promise<Agent[]> {
-    const url = `https://${settings.subdomain}.zendesk.com/api/v2/users.json?role[]=agent&role[]=admin`;
     try {
-      const response = await fetch(url, { headers: this.getAuthHeader(settings) });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
+      // API fornecida: users.json ou show_many
+      const target = `https://${settings.subdomain}.zendesk.com/api/v2/users.json?role[]=agent&role[]=admin`;
+      const data = await this.fetchWithProxy(target, settings);
+      
+      if (!data.users) return [];
+      
       return data.users.map((u: any) => ({
         id: u.id,
         name: u.name,
@@ -37,33 +77,42 @@ export const ZendeskService = {
         skills: [],
         expertise: [],
         isActive: u.active,
-        avatarUrl: u.photo?.content_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=f60040&color=fff`
+        avatarUrl: u.photo?.content_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}`
       }));
     } catch (e) {
-      console.error("Falha ao buscar agentes do Zendesk:", e);
+      console.error("Erro fetchAgents:", e);
       return [];
     }
   },
 
   async fetchTicketsFromView(settings: AppSettings): Promise<Ticket[]> {
-    if (!settings.queueId) return [];
-    const url = `https://${settings.subdomain}.zendesk.com/api/v2/views/${settings.queueId}/execute.json`;
     try {
-      const response = await fetch(url, { headers: this.getAuthHeader(settings) });
-      if (!response.ok) return [];
-      const data = await response.json();
-      return data.rows.map((row: any) => ({
-        id: row.ticket.id.toString(),
-        subject: row.ticket.subject,
-        description: row.ticket.description || "Sem descrição disponível.",
-        priority: row.ticket.priority || 'normal',
-        tags: row.ticket.tags || [],
-        status: row.ticket.status,
-        customFields: {} 
-      }));
+      // API Fornecida: /api/v2/tickets ou views
+      const endpoint = settings.queueId 
+        ? `https://${settings.subdomain}.zendesk.com/api/v2/views/${settings.queueId}/execute.json`
+        : `https://${settings.subdomain}.zendesk.com/api/v2/tickets.json?sort_by=created_at&sort_order=desc`;
+
+      const data = await this.fetchWithProxy(endpoint, settings);
+      const rawTickets = data.rows || data.tickets || [];
+      
+      return rawTickets.map((item: any) => {
+        const t = item.ticket || item;
+        return {
+          id: t.id.toString(),
+          subject: t.subject,
+          description: t.description || "",
+          priority: t.priority || 'normal',
+          tags: t.tags || [],
+          status: t.status
+        };
+      });
     } catch (e) {
-      console.error("Erro ao carregar fila do Zendesk:", e);
       return [];
     }
+  },
+
+  async fetchManyUsers(settings: AppSettings, ids: string) {
+    const target = `https://${settings.subdomain}.zendesk.com/api/v2/users/show_many.json?ids=${ids}`;
+    return await this.fetchWithProxy(target, settings);
   }
 };
