@@ -2,11 +2,11 @@
 import { AppSettings, Agent, Ticket } from '../types';
 
 export const ZendeskService = {
-  // Gera o header de autorização para o Zendesk API
   getAuthHeader(settings: AppSettings) {
     const auth = btoa(`${settings.email}/token:${settings.apiToken}`);
     return {
       'Authorization': `Basic ${auth}`,
+      'Accept': 'application/json',
       'Content-Type': 'application/json'
     };
   },
@@ -17,31 +17,30 @@ export const ZendeskService = {
       const response = await fetch(url, { headers: this.getAuthHeader(settings) });
       return response.ok;
     } catch (e) {
-      console.error("Erro ao validar credenciais", e);
+      console.error("Erro ao validar credenciais Zendesk:", e);
       return false;
     }
   },
 
   async fetchAgents(settings: AppSettings): Promise<Agent[]> {
-    // Busca usuários (agentes) do Zendesk
-    // Em um cenário real, filtraríamos por grupos usando settings.allowedGroupIds
     const url = `https://${settings.subdomain}.zendesk.com/api/v2/users.json?role[]=agent&role[]=admin`;
     try {
       const response = await fetch(url, { headers: this.getAuthHeader(settings) });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       return data.users.map((u: any) => ({
         id: u.id,
         name: u.name,
         email: u.email,
-        maxCapacity: settings.defaultMaxCapacity,
+        maxCapacity: settings.defaultMaxCapacity || 8,
         currentWorkload: 0,
         skills: [],
         expertise: [],
         isActive: u.active,
-        avatarUrl: u.photo?.content_url
+        avatarUrl: u.photo?.content_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=f60040&color=fff`
       }));
     } catch (e) {
-      console.error("Erro ao buscar agentes", e);
+      console.error("Falha ao buscar agentes do Zendesk:", e);
       return [];
     }
   },
@@ -51,6 +50,7 @@ export const ZendeskService = {
     const url = `https://${settings.subdomain}.zendesk.com/api/v2/views/${settings.queueId}/execute.json`;
     try {
       const response = await fetch(url, { headers: this.getAuthHeader(settings) });
+      if (!response.ok) return [];
       const data = await response.json();
       return data.rows.map((row: any) => ({
         id: row.ticket.id.toString(),
@@ -59,10 +59,10 @@ export const ZendeskService = {
         priority: row.ticket.priority || 'normal',
         tags: row.ticket.tags || [],
         status: row.ticket.status,
-        customFields: {} // Campos personalizados seriam mapeados aqui se necessário
+        customFields: {} 
       }));
     } catch (e) {
-      console.error("Erro ao buscar tickets da view", e);
+      console.error("Erro ao carregar fila do Zendesk:", e);
       return [];
     }
   }
