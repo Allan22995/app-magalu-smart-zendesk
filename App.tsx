@@ -16,9 +16,9 @@ const App: React.FC = () => {
   const [memory, setMemory] = useState<AssignmentMemory[]>([]);
   const [logs, setLogs] = useState<AssignmentLog[]>([]);
   
-  // Credenciais fixas conforme solicitado
+  // Credenciais fixas conforme solicitado - Agora com subdomínio opsmagalu
   const [settings, setSettings] = useState<AppSettings>({
-    subdomain: 'luizalabs', // Ajustado para o subdomínio padrão do labs se necessário, ou mantenha opsmagalu
+    subdomain: 'opsmagalu',
     apiToken: 'MgqbK3ah4XBOcAJOiMXgFU9O2gYJqA2HHeSHhhL5',
     email: 'alan.rosa@luizalabs.com',
     defaultMaxCapacity: 8,
@@ -44,32 +44,43 @@ const App: React.FC = () => {
   });
 
   const loadData = useCallback(async () => {
-    // Tenta carregar do storage primeiro para manter expertises salvas localmente
+    // 1. Carrega dados salvos localmente (persistência de expertises)
     const savedAgents = await StorageService.loadAgents();
     const savedSettings = await StorageService.loadSettings();
     const savedMemory = localStorage.getItem('magalu_ai_memory');
     const savedLogs = localStorage.getItem('magalu_ai_logs');
     
+    // Mantém as credenciais fixas mas permite carregar outras configs se existirem
     if (savedSettings) {
-      setSettings(prev => ({ ...prev, ...savedSettings }));
+      setSettings(prev => ({ ...prev, ...savedSettings, subdomain: 'opsmagalu', email: 'alan.rosa@luizalabs.com' }));
     }
 
-    // Busca agentes reais do Zendesk usando as credenciais fixas
+    // 2. Tenta sincronizar com o Zendesk real
     try {
       const realAgents = await ZendeskService.fetchAgents(settings);
-      if (realAgents.length > 0) {
-        // Mescla expertises salvas anteriormente com os novos dados dos agentes
+      
+      if (realAgents && realAgents.length > 0) {
         const mergedAgents = realAgents.map(ra => {
           const found = savedAgents.find(sa => sa.id === ra.id);
           return found ? { ...ra, expertise: found.expertise || [] } : ra;
         });
         setAgents(mergedAgents);
         StorageService.saveAgents(mergedAgents);
-      } else if (savedAgents.length > 0) {
-        setAgents(savedAgents);
+      } else {
+        // Fallback: Se a API falhar (ex: CORS), usa dados locais ou mocks para não ficar vazio
+        if (savedAgents.length > 0) {
+          setAgents(savedAgents);
+        } else {
+          // Mock de segurança para visualização inicial caso a API seja bloqueada
+          const mockAgents: Agent[] = [
+            { id: 1, name: "Alan Rosa (Mock)", email: "alan.rosa@luizalabs.com", maxCapacity: 8, currentWorkload: 2, skills: [], expertise: [], isActive: true },
+            { id: 2, name: "Suporte Magalu 01", email: "suporte1@magalu.com", maxCapacity: 8, currentWorkload: 5, skills: [], expertise: [], isActive: true }
+          ];
+          setAgents(mockAgents);
+        }
       }
     } catch (error) {
-      console.error("Erro na sincronização inicial:", error);
+      console.warn("API Zendesk inacessível (CORS ou Rede). Usando dados locais.");
       if (savedAgents.length > 0) setAgents(savedAgents);
     }
 
@@ -87,8 +98,9 @@ const App: React.FC = () => {
   };
 
   const handleUpdateSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
+    const fixedSettings = { ...newSettings, subdomain: 'opsmagalu', email: 'alan.rosa@luizalabs.com' };
+    setSettings(fixedSettings);
+    StorageService.saveSettings(fixedSettings);
   };
 
   const saveToMemory = (tag: string, agentId: number, log: AssignmentLog) => {
