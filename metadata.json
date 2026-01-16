@@ -1,0 +1,10 @@
+{
+  "name": "Magalu Smart Assignment",
+  "description": "Sistema inteligente de atribuição de tickets para Zendesk com gestão de capacidade e especialidades.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "version": "1.0.0",
+  "author": "Ops Magalu"
+}
